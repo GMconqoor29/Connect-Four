@@ -1,0 +1,29 @@
+Build a turn-based online game application (such as chess, Chinese chess, Go, mahjong, battleship, crossword puzzles, hangman, etc.)	"Required features:
+
+User Management: Registration, login, and display online players' status.
+1-1 Game Play: Connect two players for turn-based games, ensuring valid moves.
+Game Outcome Detection: Notify players of win/draw/loss.
+Ranking System: Implement a point system (ELO or similar) with updates after each match.
+Matchmaking: Match players of similar skill levels.
+Game Controls: Pause, resign, propose a draw, and start a new game with the same opponent.
+Game History: Track and display user stats, and allow game replays.
+Advanced Features: Custom board setups, time settings, AI opponents.
+GUI: Interactive, user-friendly interface"
+"Stream handling: 1 point
+Implementing socket I/O mechanism on the server: 2 points
+Account registration and management: 2 points
+Login and session management: 2 points
+Provide a list of ready players: 2 points
+Send a challenge: 2 points
+Accept/Decline a challenge: 1 point
+Transmit move information: 2 points
+Validate move legality: 1-3 points (depending on game complexity)
+Determine game result: 1 point
+Log game data: 1 point
+Transmit game results and logs: 2 points
+Save game info and enable replay: 2 points
+Implement a scoring system: 1-3 points (based on complexity)
+Offer resignation/draw: 1 point
+Request rematch: 1 point
+Advanced features: 2-10 points
+Graphical User Interface (GUI): 3 points"
