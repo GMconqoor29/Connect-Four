@@ -1,0 +1,21 @@
+# Documentation / Internal planning
+phan_chia_viec_va_cau_truc.md
+
+# Compiled object files and binaries
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+bin/
+build/
+
+# Editor & OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

@@ -81,9 +81,15 @@ CONNECTED --LOGIN--> IDLE --CREATE_ROOM/JOIN_ROOM--> IN_ROOM --đủ 2 người-
 | `CHALLENGE`, `ACCEPT`, `DECLINE` | | ✔ | | |
 | `FIND_MATCH`, `CANCEL_MATCH` | | ✔ | | |
 | `MOVE`, `RESIGN`, `DRAW_OFFER`, `DRAW_ACCEPT`, `DRAW_DECLINE`, `SYNC` | | | | ✔ |
+| `PAUSE_OFFER`, `PAUSE_ACCEPT`, `PAUSE_DECLINE`, `RESUME` | | | | ✔ |
 | `REMATCH`, `REMATCH_DECLINE` | | ✔ (sau khi vừa kết thúc ván) | | |
 
 Lệnh gửi sai trạng thái: server trả `ERR 400 invalid_state`.
+
+**Quy tắc chuyển trạng thái quan trọng:**
+1. **Hủy thách đấu khi rời IDLE:** Khi người chơi chuyển trạng thái rời khỏi `IDLE` (tham gia phòng `IN_ROOM`, vào ván `IN_GAME`, `LOGOUT`, hoặc ngắt kết nối `DISCONNECT`), mọi lời thách đấu đang chờ liên quan đến người chơi đó (cả gửi đi và nhận về) đều lập tức bị hủy. Server gửi sự kiện `CHALLENGE_EXPIRED` (kèm `user`) cho đối tác còn lại để họ không phải chờ hết 30 giây.
+2. **Điều kiện REMATCH:** `REMATCH` chỉ được phép gọi khi vừa kết thúc ván đấu và cả hai người chơi vẫn đang ở `IDLE`. Server lưu cờ `rematch_available` và `last_opponent`. Nếu đối thủ đã rời đi hoặc người chơi chưa đấu ván nào, gửi `REMATCH` sẽ nhận `ERR 400 invalid_state` (hoặc `ERR 301 player_not_found`).
+3. **Đăng nhập trên cùng kết nối:** Nếu kết nối đã đăng nhập thành công (`IDLE`, `IN_ROOM`, `IN_GAME`) mà gửi tiếp lệnh `LOGIN`, server trả `ERR 400 invalid_state` (chỉ cho phép `LOGIN` ở `CONNECTED`). Khác với `ERR 104 already_logged_in` là khi một socket khác cố đăng nhập cùng tài khoản.
 
 ---
 
@@ -119,10 +125,10 @@ Nếu server không đọc được `id` (JSON hỏng, thiếu `id`), `id` trong
 | Mã | Lý do (`reason`) | Ý nghĩa |
 |---|---|---|
 | 100 | `unknown_command` | `type` không tồn tại |
-| 101 | `bad_arguments` | Thiếu trường, sai kiểu hoặc sai giá trị |
+| 101 | `bad_arguments` | Thiếu trường, sai kiểu dữ liệu (chuỗi thay vì số, âm, ngoài khoảng đối với `col`, `limit`, `turn_time`...) hoặc sai giá trị |
 | 102 | `bad_credentials` | Sai username hoặc password |
 | 103 | `username_taken` | Username đã tồn tại |
-| 104 | `already_logged_in` | Tài khoản đang đăng nhập ở nơi khác |
+| 104 | `already_logged_in` | Tài khoản đang đăng nhập ở một kết nối/socket khác |
 | 105 | `invalid_username_or_password_format` | Không đúng quy tắc định dạng |
 | 106 | `wrong_old_password` | Mật khẩu cũ không đúng |
 | 107 | `malformed_json` | Dòng không phải JSON hợp lệ, không phải object, thiếu `type` hoặc `id` |
@@ -134,10 +140,10 @@ Nếu server không đọc được `id` (JSON hỏng, thiếu `id`), `id` trong
 | 302 | `player_busy` | Người chơi đang không rảnh (đang chơi hoặc đang trong phòng) |
 | 303 | `no_such_challenge` | Không có lời thách đấu đó |
 | 304 | `cannot_challenge_self` | Không thể thách đấu chính mình |
-| 400 | `invalid_state` | Lệnh không hợp lệ ở trạng thái hiện tại |
+| 400 | `invalid_state` | Lệnh không hợp lệ ở trạng thái hiện tại (hoặc gửi lời mời trùng lặp) |
 | 401 | `room_not_found` | Không có phòng đó |
 | 402 | `room_full` | Phòng đã đủ 2 người |
-| 403 | `no_pending_offer` | Không có lời đề nghị hòa hoặc đấu lại nào đang chờ |
+| 403 | `no_pending_offer` | Không có lời đề nghị hòa, hoãn hoặc đấu lại nào đang chờ |
 | 404 | `game_not_found` | Không có ván đó |
 | 500 | `server_error` | Lỗi nội bộ server |
 
@@ -167,7 +173,7 @@ Nếu bỏ `user` trong `PROFILE`, server trả hồ sơ của chính người g
 {"type":"OK","id":5,"cmd":"LIST_PLAYERS","players":[{"user":"hieu","elo":1200,"status":"IDLE"},{"user":"hao","elo":1200,"status":"IN_GAME"}]}
 ```
 
-Server trả tối đa **50** người chơi (ưu tiên người đang rảnh).
+Server trả tối đa **40** người chơi (ưu tiên người đang rảnh).
 
 Sự kiện server tự gửi cho người đang ở sảnh khi trạng thái ai đó đổi (tuỳ chọn, giúp danh sách cập nhật thời gian thực):
 
@@ -186,7 +192,7 @@ Sự kiện server tự gửi cho người đang ở sảnh khi trạng thái ai
 | `LEAVE_ROOM` | không có | 400 |
 | `LIST_ROOMS` | `rooms`: mảng các `{"room_id","host","players","status"}` với `status` là `WAITING` hoặc `PLAYING` | |
 
-`LIST_ROOMS` trả tối đa **50** phòng.
+`LIST_ROOMS` trả tối đa **40** phòng.
 
 Sự kiện:
 
@@ -195,19 +201,20 @@ Sự kiện:
 {"type":"ROOM_LEFT","user":"hao"}
 ```
 
-- `ROOM_JOINED` gửi cho chủ phòng khi có người vào.
+- `ROOM_JOINED` gửi cho chủ phòng khi có người vào phòng.
 - `ROOM_LEFT` gửi cho người còn lại khi có người rời.
 
-Khi phòng đủ 2 người, server tự bắt đầu ván và gửi `GAME_START` cho cả hai (chủ phòng cầm quân `RED`).
-Không thể `LEAVE_ROOM` khi đang trong ván; dùng `RESIGN`.
+**Lưu ý:** Phòng trong Connect Four có sức chứa 2 người. Khi khách (guest) vào phòng, server gửi `ROOM_JOINED` cho host để thông báo, rồi tự động bắt đầu ván đấu ngay bằng `GAME_START` gửi cho cả hai bên (chủ phòng cầm quân `RED`). Không thể `LEAVE_ROOM` khi đang trong ván; dùng `RESIGN`.
 
 ### 6.4 Thách đấu
 
 | Lệnh (trường) | Dữ liệu trong `OK` | Lỗi |
 |---|---|---|
-| `CHALLENGE` (`user`) | không có | 301, 302, 304 |
-| `ACCEPT` (`user`) | không có, rồi sự kiện `GAME_START` | 303 |
-| `DECLINE` (`user`) | không có | 303 |
+| `CHALLENGE` (`user`, `turn_time` tuỳ chọn) | không có | 101, 301, 302, 304 |
+| `ACCEPT` (`user`) | không có, rồi sự kiện `GAME_START` | 303, 400 |
+| `DECLINE` (`user`) | không có | 303, 400 |
+
+`turn_time`: thời gian tối đa cho mỗi nước đi (tính bằng giây, mặc định 30, đặt 0 nếu không giới hạn).
 
 Sự kiện:
 
@@ -219,7 +226,7 @@ Sự kiện:
 
 - `CHALLENGED`: gửi cho người bị thách đấu.
 - `CHALLENGE_DECLINED`: gửi cho người thách đấu khi bị từ chối.
-- `CHALLENGE_EXPIRED`: gửi cho **cả hai** khi lời thách đấu hết hạn sau 30 giây không ai trả lời (`user` là người còn lại).
+- `CHALLENGE_EXPIRED`: gửi cho người còn lại khi lời thách đấu hết hạn (sau 30 giây không phản hồi, hoặc đối tác vừa rời `IDLE` như vào phòng, vào ván, mất mạng).
 
 Người bị thách đấu bận hoặc offline: người thách đấu nhận `ERR 302` hoặc `ERR 301` ngay.
 
@@ -228,11 +235,12 @@ Người bị thách đấu bận hoặc offline: người thách đấu nhận 
 Sự kiện bắt đầu, gửi cho **cả hai người**:
 
 ```json
-{"type":"GAME_START","game_id":7,"opponent":"hao","color":"RED","first":true}
+{"type":"GAME_START","game_id":7,"opponent":"hao","color":"RED","first":true,"turn_time":30}
 ```
 
 - `color` là `"RED"` hoặc `"YELLOW"`.
 - `first` là `true` nếu người nhận đi trước, `false` nếu đi sau.
+- `turn_time` là thời gian cho mỗi lượt đi (tính bằng giây, mặc định 30).
 
 | Lệnh (trường) | Dữ liệu trong `OK` | Lỗi |
 |---|---|---|
@@ -246,7 +254,12 @@ Sau mỗi nước đi hợp lệ, server gửi cho **đối thủ**:
 
 Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và `OPP_MOVE` (cho đối thủ) trước, rồi gửi `GAME_OVER` cho cả hai.
 
-**Đồng bộ lại bàn cờ** (dùng khi client cần vẽ lại, ví dụ sau lỗi):
+**Quy tắc tính giờ lượt (Turn Timer):**
+- Đồng hồ được đặt lại thành `turn_time` giây sau mỗi nước đi hợp lệ (`MOVE` / `OPP_MOVE`).
+- Server tính giờ bằng timestamp `turn_start_time` trong vòng lặp `poll()`.
+- Nếu quá `turn_time` giây mà người đến lượt không gửi nước đi hợp lệ, server gửi `GAME_OVER` với `reason: "TIMEOUT"`, bên hết giờ bị xử thua (`LOSS`), đối thủ thắng (`WIN`).
+
+**Đồng bộ lại bàn cờ** (dùng khi client cần vẽ lại, ví dụ sau lỗi hoặc reconnect):
 
 | Lệnh | Dữ liệu trong `OK` |
 |---|---|
@@ -267,18 +280,32 @@ Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và
 | `RESIGN` | Một bên đầu hàng |
 | `DRAW_AGREED` | Hai bên đồng ý hòa |
 | `DISCONNECT` | Một bên mất kết nối (bên còn lại thắng) |
-| `TIMEOUT` | Hết giờ (chỉ dùng nếu nhóm làm tính năng đồng hồ) |
+| `TIMEOUT` | Hết giờ lượt đi (`turn_time`) |
 
-### 6.7 Đầu hàng và xin hòa
+### 6.7 Đầu hàng, xin hòa và tạm dừng (Game Controls)
 
-| Lệnh | Dữ liệu trong `OK` | Sự kiện cho đối thủ |
+| Lệnh | Dữ liệu trong `OK` | Sự kiện gửi đi |
 |---|---|---|
-| `RESIGN` | không có, rồi `GAME_OVER` cho cả hai | |
-| `DRAW_OFFER` | không có | `{"type":"DRAW_OFFERED"}` |
-| `DRAW_ACCEPT` | không có, rồi `GAME_OVER` (`DRAW`, `DRAW_AGREED`) cho cả hai | |
-| `DRAW_DECLINE` | không có | `{"type":"DRAW_DECLINED"}` (gửi cho người xin hòa) |
+| `RESIGN` | không có | `GAME_OVER` (`RESIGN`) cho cả hai |
+| `DRAW_OFFER` | không có | `{"type":"DRAW_OFFERED"}` gửi cho đối thủ |
+| `DRAW_ACCEPT` | không có | `GAME_OVER` (`DRAW`, `DRAW_AGREED`) cho cả hai |
+| `DRAW_DECLINE` | không có | `{"type":"DRAW_DECLINED"}` gửi cho người xin hòa |
+| `PAUSE_OFFER` | không có | `{"type":"PAUSE_OFFERED"}` gửi cho đối thủ |
+| `PAUSE_ACCEPT` | không có | `{"type":"PAUSED"}` gửi cho cả hai |
+| `PAUSE_DECLINE` | không có | `{"type":"PAUSE_DECLINED"}` gửi cho người xin pause |
+| `RESUME` | không có | `{"type":"RESUMED"}` gửi cho cả hai |
 
-Lời xin hòa tự hủy khi bên được hỏi đi một nước. `DRAW_ACCEPT`/`DRAW_DECLINE` khi không có lời xin hòa: `ERR 403`.
+**Quy tắc xin hòa (Draw):**
+- Lời xin hòa tự hủy khi bất kỳ bên nào đi một nước `MOVE` hợp lệ.
+- Gửi `DRAW_OFFER` khi đang có một lời xin hòa chưa được phản hồi: server trả `ERR 400 invalid_state`.
+- `DRAW_ACCEPT`/`DRAW_DECLINE` khi không có lời xin hòa đang chờ: `ERR 403 no_pending_offer`.
+
+**Quy tắc tạm dừng (Pause):**
+- Bất kỳ bên nào cũng có thể gửi `PAUSE_OFFER`. Đối thủ nhận sự kiện `PAUSE_OFFERED`.
+- Khi đối thủ gửi `PAUSE_ACCEPT`, ván đấu chuyển sang trạng thái tạm dừng, server gửi `PAUSED` cho cả hai và đồng hồ `turn_time` bị đóng băng.
+- Thời gian tạm dừng tối đa là **60 giây**. Nếu hết 60 giây không ai gửi `RESUME`, server tự động gửi `RESUMED` và kích hoạt lại đồng hồ.
+- Bất kỳ bên nào cũng có thể gửi `RESUME` để tiếp tục ván đấu ngay. Server gửi `RESUMED` cho cả hai bên.
+- `PAUSE_ACCEPT`/`PAUSE_DECLINE` khi không có lời xin pause: `ERR 403 no_pending_offer`.
 
 ### 6.8 Đấu lại cùng đối thủ
 
@@ -287,7 +314,10 @@ Lời xin hòa tự hủy khi bên được hỏi đi một nước. `DRAW_ACCEP
 | `REMATCH` | không có | `{"type":"REMATCH_OFFERED"}` |
 | `REMATCH_DECLINE` | không có | `{"type":"REMATCH_DECLINED"}` |
 
-Khi **cả hai** cùng gửi `REMATCH`, server bắt đầu ván mới bằng `GAME_START` cho cả hai, **đổi màu quân** so với ván trước. Nếu đối thủ đã rời, `REMATCH` trả `ERR 301`. Không có lời đề nghị đang chờ khi gửi `REMATCH_DECLINE`: `ERR 403`.
+- Khi **cả hai** cùng gửi `REMATCH`, server bắt đầu ván mới bằng `GAME_START` cho cả hai, **đổi màu quân** so với ván trước.
+- Nếu đối thủ đã rời hoặc thoát ứng dụng: `REMATCH` trả `ERR 301 player_not_found`.
+- **Nếu đang chờ rematch mà đối thủ ngắt kết nối, đăng xuất hoặc rời sảnh:** Server lập tức gửi sự kiện `{"type":"REMATCH_DECLINED","user":"<tên_đối_thủ>"}` cho bên đang chờ để client không bị treo màn hình chờ.
+- Không có lời đề nghị đang chờ khi gửi `REMATCH_DECLINE`: `ERR 403 no_pending_offer`.
 
 ### 6.9 Lịch sử và replay
 
@@ -459,6 +489,46 @@ Vì phản hồi ghép theo `id`, client không bị nhầm khi sự kiện đ�
 C1 -> S : {"type":"LIST_PLAYERS","id":50}
 S  -> C1: {"type":"CHALLENGED","from":"hao"}                      (sự kiện đến trước phản hồi)
 S  -> C1: {"type":"OK","id":50,"cmd":"LIST_PLAYERS","players":[...]}
+```
+
+### 8.8 Tạm dừng và tiếp tục ván đấu (Pause / Resume)
+
+```
+C1 -> S : {"type":"PAUSE_OFFER","id":60}
+S  -> C1: {"type":"OK","id":60,"cmd":"PAUSE_OFFER"}
+S  -> C2: {"type":"PAUSE_OFFERED"}
+C2 -> S : {"type":"PAUSE_ACCEPT","id":25}
+S  -> C2: {"type":"OK","id":25,"cmd":"PAUSE_ACCEPT"}
+S  -> C1: {"type":"PAUSED"}                                      (đồng hồ turn_time tạm dừng)
+S  -> C2: {"type":"PAUSED"}
+
+C1 -> S : {"type":"RESUME","id":61}
+S  -> C1: {"type":"OK","id":61,"cmd":"RESUME"}
+S  -> C1: {"type":"RESUMED"}                                     (ván tiếp tục chạy)
+S  -> C2: {"type":"RESUMED"}
+```
+
+### 8.9 Đăng nhập lại trên cùng kết nối (ERR 400) vs Socket khác (ERR 104)
+
+```
+(Kết nối C1 đã LOGIN thành công, đang ở trạng thái IDLE)
+C1 -> S : {"type":"LOGIN","id":70,"user":"hieu","pass":"123456"}
+S  -> C1: {"type":"ERR","id":70,"code":400,"reason":"invalid_state"}
+
+(Một kết nối socket khác C_other cố tình đăng nhập tài khoản hieu đang online)
+C_other -> S : {"type":"LOGIN","id":1,"user":"hieu","pass":"123456"}
+S       -> C_other: {"type":"ERR","id":1,"code":104,"reason":"already_logged_in"}
+```
+
+### 8.10 Đối thủ thoát khi đang chờ REMATCH
+
+```
+(Sau khi GAME_OVER, cả hai trở về IDLE)
+C1 -> S : {"type":"REMATCH","id":80}
+S  -> C1: {"type":"OK","id":80,"cmd":"REMATCH"}
+S  -> C2: {"type":"REMATCH_OFFERED"}
+(C2 đột ngột ngắt kết nối hoặc bấm LOGOUT)
+S  -> C1: {"type":"REMATCH_DECLINED","user":"hao"}                (C1 không bị treo chờ)
 ```
 
 ---
