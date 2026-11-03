@@ -1,6 +1,10 @@
 # Documentation / Internal planning
 phan_chia_viec_va_cau_truc.md
 
+# Database local credentials
+database/db_config.env
+*.db
+
 # Compiled object files and binaries
 *.o
 *.obj
@@ -11,6 +15,14 @@ phan_chia_viec_va_cau_truc.md
 *.out
 bin/
 build/
+server_c/build/
+server_c/connect4_server
+
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
 # Editor & OS files
 .vscode/
