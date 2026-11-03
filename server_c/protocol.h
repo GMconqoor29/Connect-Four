@@ -2,7 +2,7 @@
  * @file protocol.h
  * @brief Application-layer protocol definition for Connect Four Online (NDJSON over TCP).
  *
- * Nhóm 10:
+ * Nhóm 11:
  *  - Trần Trung Hiếu  (20235934)
  *  - Phạm Song Hào    (20235930)
  *  - Nguyễn Đức Hoàng (20235938)
@@ -49,6 +49,8 @@ extern "C" {
 #define PROTOCOL_TIMEOUT_SEC            45
 #define PROTOCOL_CHALLENGE_TIMEOUT_SEC  30
 #define PROTOCOL_DEFAULT_TURN_TIME_SEC  30
+#define PROTOCOL_MIN_TURN_TIME_SEC      5
+#define PROTOCOL_MAX_TURN_TIME_SEC      120
 #define PROTOCOL_MAX_PAUSE_SEC          60
 
 /* ========================================================================= */
@@ -68,16 +70,21 @@ extern "C" {
 #define HISTORY_MAX_LIMIT               30
 
 /* ========================================================================= */
-/* 3. Connect Four Game Board & ELO Constants                                */
+/* 3. Connect Four Game Board, Bot AI & ELO Constants                        */
 /* ========================================================================= */
 
-#define BOARD_ROWS                      6   /* Rows: 0 (bottom) to 5 (top) */
-#define BOARD_COLS                      7   /* Columns: 0 (left) to 6 (right) */
+#define BOARD_ROWS                      6   /* Fixed Rows: 0 (bottom) to 5 (top) */
+#define BOARD_COLS                      7   /* Fixed Columns: 0 (left) to 6 (right) */
 #define TOTAL_CELLS                     (BOARD_ROWS * BOARD_COLS) /* 42 */
 #define CONNECT_TARGET                  4   /* 4 in a row to win */
 
 #define DEFAULT_ELO                     1200
 #define ELO_K_FACTOR                    32
+
+/* Representative ELO ratings for AI Bot levels */
+#define BOT_EASY_ELO                    800
+#define BOT_MEDIUM_ELO                  1200
+#define BOT_HARD_ELO                    1600
 
 /* Board cell character representations */
 #define CELL_EMPTY                      '.'
@@ -93,8 +100,16 @@ extern "C" {
 #define COLOR_YELLOW_STR                "YELLOW"
 #define COLOR_DRAW_STR                  "DRAW"
 
+/* AI Bot difficulty levels & system opponent identifiers */
+#define BOT_DIFFICULTY_EASY_STR         "EASY"
+#define BOT_DIFFICULTY_MEDIUM_STR       "MEDIUM"
+#define BOT_DIFFICULTY_HARD_STR         "HARD"
+
+#define BOT_USER_EASY_STR               "BOT_EASY"
+#define BOT_USER_MEDIUM_STR             "BOT_MEDIUM"
+#define BOT_USER_HARD_STR               "BOT_HARD"
+
 /* Player presence status */
-#define STATUS_ONLINE_STR               "ONLINE"
 #define STATUS_OFFLINE_STR              "OFFLINE"
 #define STATUS_IDLE_STR                 "IDLE"
 #define STATUS_IN_ROOM_STR              "IN_ROOM"
@@ -139,6 +154,7 @@ extern "C" {
 #define CMD_CHALLENGE                   "CHALLENGE"
 #define CMD_ACCEPT                      "ACCEPT"
 #define CMD_DECLINE                     "DECLINE"
+#define CMD_PLAY_BOT                    "PLAY_BOT"
 #define CMD_MOVE                        "MOVE"
 #define CMD_SYNC                        "SYNC"
 #define CMD_RESIGN                      "RESIGN"
@@ -195,6 +211,13 @@ extern "C" {
 #define KEY_WINS                        "wins"
 #define KEY_LOSSES                      "losses"
 #define KEY_DRAWS                       "draws"
+#define KEY_BOT_WINS                    "bot_wins"
+#define KEY_BOT_LOSSES                  "bot_losses"
+#define KEY_BOT_DRAWS                   "bot_draws"
+#define KEY_MODE                        "mode"
+
+#define HISTORY_MODE_PVP_STR            "PVP"
+#define HISTORY_MODE_BOT_STR            "BOT"
 
 #define KEY_STATUS                      "status"
 #define KEY_PLAYERS                     "players"
@@ -203,6 +226,7 @@ extern "C" {
 #define KEY_HOST                        "host"
 
 #define KEY_FROM                        "from"
+#define KEY_DIFFICULTY                  "difficulty"
 #define KEY_GAME_ID                     "game_id"
 #define KEY_OPPONENT                    "opponent"
 #define KEY_COLOR                       "color"
@@ -213,7 +237,6 @@ extern "C" {
 #define KEY_ROW                         "row"
 #define KEY_BOARD                       "board"
 #define KEY_TURN                        "turn"
-#define KEY_DURATION                    "duration"
 
 #define KEY_RESULT                      "result"
 #define KEY_ELO_DELTA                   "elo_delta"
@@ -376,14 +399,21 @@ typedef enum {
     CLIENT_STATE_IN_GAME   = 3  /* Actively playing in a match */
 } ClientState;
 
-/** Player presence status for lobby listing */
+/** Player presence status for lobby listing and STATUS_CHANGE events */
 typedef enum {
     PLAYER_STATUS_OFFLINE = 0,
-    PLAYER_STATUS_ONLINE  = 1,
-    PLAYER_STATUS_IDLE    = 2,
-    PLAYER_STATUS_IN_ROOM = 3,
-    PLAYER_STATUS_IN_GAME = 4
+    PLAYER_STATUS_IDLE    = 1,
+    PLAYER_STATUS_IN_ROOM = 2,
+    PLAYER_STATUS_IN_GAME = 3
 } PlayerStatus;
+
+/** AI Bot difficulty levels (for PLAY_BOT command) */
+typedef enum {
+    BOT_DIFFICULTY_NONE   = 0,
+    BOT_DIFFICULTY_EASY   = 1,
+    BOT_DIFFICULTY_MEDIUM = 2,
+    BOT_DIFFICULTY_HARD   = 3
+} BotDifficulty;
 
 /** Room state */
 typedef enum {
@@ -414,13 +444,16 @@ typedef enum {
 /* 9. Data Structures for Server Modules & Handlers                          */
 /* ========================================================================= */
 
-/** User profile summary (for PROFILE command) */
+/** User profile summary (for PROFILE command, separating PvP and vs Bot stats) */
 typedef struct {
     char username[USERNAME_MAX_LEN + 1];
     int elo;
     int wins;
     int losses;
     int draws;
+    int bot_wins;
+    int bot_losses;
+    int bot_draws;
 } ProtocolUserProfile;
 
 /** Player entry in LIST_PLAYERS */
@@ -436,6 +469,7 @@ typedef struct {
     char host[USERNAME_MAX_LEN + 1];
     int players_count;
     RoomStatus status;
+    int turn_time_sec;
 } ProtocolRoomEntry;
 
 /** Game summary in HISTORY */
@@ -463,13 +497,24 @@ typedef struct {
 /** Rematch session tracking flags (for lobby and match lifecycle) */
 typedef struct {
     char last_opponent[USERNAME_MAX_LEN + 1];
-    bool rematch_available; /* true immediately after game ends until either leaves IDLE or timeout */
+    bool rematch_available; /* true immediately after game ends until either leaves IDLE or starts FIND_MATCH */
     bool rematch_offered;   /* true if this player has already sent REMATCH */
 } ProtocolRematchState;
+
+/** Lobby matchmaking & outgoing challenge tracking per client session (for lobby.c) */
+typedef struct {
+    bool is_searching_match;                            /* true after FIND_MATCH until CANCEL_MATCH or GAME_START */
+    int64_t search_start_time;                          /* Unix timestamp when FIND_MATCH started */
+    bool has_outgoing_challenge;                        /* At most 1 outgoing challenge at a time */
+    char outgoing_target[USERNAME_MAX_LEN + 1];         /* Username of challenged player */
+    int outgoing_turn_time_sec;                         /* Turn time proposed in CHALLENGE */
+    int64_t outgoing_challenge_time;                    /* Unix timestamp when CHALLENGE was sent */
+} ProtocolLobbyState;
 
 /** In-game match controls & turn timer state (for match.c) */
 typedef struct {
     bool is_paused;
+    bool is_bot_match;          /* true if playing against BOT_EASY, BOT_MEDIUM, or BOT_HARD */
     PieceColor paused_by;       /* PIECE_NONE, PIECE_RED, or PIECE_YELLOW */
     PieceColor draw_offered_by;  /* PIECE_NONE, PIECE_RED, or PIECE_YELLOW */
     PieceColor pause_offered_by; /* PIECE_NONE, PIECE_RED, or PIECE_YELLOW */
@@ -533,6 +578,15 @@ static inline bool protocol_is_valid_col(int col) {
  */
 static inline bool protocol_is_valid_row(int row) {
     return (row >= 0 && row < BOARD_ROWS);
+}
+
+/**
+ * @brief Check if turn_time is valid:
+ *        0 (unlimited) or within [PROTOCOL_MIN_TURN_TIME_SEC, PROTOCOL_MAX_TURN_TIME_SEC] (5..120s).
+ */
+static inline bool protocol_is_valid_turn_time(int turn_time) {
+    return (turn_time == 0 ||
+            (turn_time >= PROTOCOL_MIN_TURN_TIME_SEC && turn_time <= PROTOCOL_MAX_TURN_TIME_SEC));
 }
 
 /**
@@ -603,7 +657,6 @@ static inline PieceColor protocol_winner_from_str(const char *str) {
  */
 static inline const char *protocol_status_to_str(PlayerStatus status) {
     switch (status) {
-        case PLAYER_STATUS_ONLINE:  return STATUS_ONLINE_STR;
         case PLAYER_STATUS_OFFLINE: return STATUS_OFFLINE_STR;
         case PLAYER_STATUS_IDLE:    return STATUS_IDLE_STR;
         case PLAYER_STATUS_IN_ROOM: return STATUS_IN_ROOM_STR;
@@ -620,8 +673,42 @@ static inline PlayerStatus protocol_status_from_str(const char *str) {
     if (strcmp(str, STATUS_IDLE_STR) == 0) return PLAYER_STATUS_IDLE;
     if (strcmp(str, STATUS_IN_ROOM_STR) == 0) return PLAYER_STATUS_IN_ROOM;
     if (strcmp(str, STATUS_IN_GAME_STR) == 0) return PLAYER_STATUS_IN_GAME;
-    if (strcmp(str, STATUS_ONLINE_STR) == 0) return PLAYER_STATUS_ONLINE;
     return PLAYER_STATUS_OFFLINE;
+}
+
+/**
+ * @brief Parse BotDifficulty enum from difficulty string ("EASY", "MEDIUM", "HARD").
+ */
+static inline BotDifficulty protocol_bot_difficulty_from_str(const char *str) {
+    if (!str) return BOT_DIFFICULTY_NONE;
+    if (strcmp(str, BOT_DIFFICULTY_EASY_STR) == 0)   return BOT_DIFFICULTY_EASY;
+    if (strcmp(str, BOT_DIFFICULTY_MEDIUM_STR) == 0) return BOT_DIFFICULTY_MEDIUM;
+    if (strcmp(str, BOT_DIFFICULTY_HARD_STR) == 0)   return BOT_DIFFICULTY_HARD;
+    return BOT_DIFFICULTY_NONE;
+}
+
+/**
+ * @brief Get system opponent identifier for a BotDifficulty ("BOT_EASY", "BOT_MEDIUM", "BOT_HARD").
+ */
+static inline const char *protocol_bot_difficulty_to_user(BotDifficulty diff) {
+    switch (diff) {
+        case BOT_DIFFICULTY_EASY:   return BOT_USER_EASY_STR;
+        case BOT_DIFFICULTY_MEDIUM: return BOT_USER_MEDIUM_STR;
+        case BOT_DIFFICULTY_HARD:   return BOT_USER_HARD_STR;
+        default:                    return "";
+    }
+}
+
+/**
+ * @brief Get representative ELO rating for a BotDifficulty (800, 1200, 1600).
+ */
+static inline int protocol_bot_difficulty_to_elo(BotDifficulty diff) {
+    switch (diff) {
+        case BOT_DIFFICULTY_EASY:   return BOT_EASY_ELO;
+        case BOT_DIFFICULTY_MEDIUM: return BOT_MEDIUM_ELO;
+        case BOT_DIFFICULTY_HARD:   return BOT_HARD_ELO;
+        default:                    return DEFAULT_ELO;
+    }
 }
 
 /**
@@ -714,6 +801,7 @@ static inline bool protocol_is_cmd_allowed_in_state(const char *cmd, ClientState
                     strcmp(cmd, CMD_CHALLENGE) == 0 ||
                     strcmp(cmd, CMD_ACCEPT) == 0 ||
                     strcmp(cmd, CMD_DECLINE) == 0 ||
+                    strcmp(cmd, CMD_PLAY_BOT) == 0 ||
                     strcmp(cmd, CMD_FIND_MATCH) == 0 ||
                     strcmp(cmd, CMD_CANCEL_MATCH) == 0 ||
                     strcmp(cmd, CMD_REMATCH) == 0 ||
@@ -739,6 +827,123 @@ static inline bool protocol_is_cmd_allowed_in_state(const char *cmd, ClientState
         default:
             return false;
     }
+}
+
+/* ========================================================================= */
+/* 11. Edge-Case Validation & State Update Helpers (Section 4 & 6 Rules)     */
+/* ========================================================================= */
+
+/**
+ * @brief Check if a username belongs to one of the system AI Bots.
+ */
+static inline bool protocol_is_bot_user(const char *username) {
+    if (!username) return false;
+    return (strcmp(username, BOT_USER_EASY_STR) == 0 ||
+            strcmp(username, BOT_USER_MEDIUM_STR) == 0 ||
+            strcmp(username, BOT_USER_HARD_STR) == 0);
+}
+
+/**
+ * @brief Check if a username starts with the reserved "BOT_" prefix (case-insensitive).
+ *        Used during REGISTER to reject reserved Bot names with ERR_USERNAME_TAKEN (103).
+ */
+static inline bool protocol_has_bot_prefix(const char *username) {
+    if (!username || strlen(username) < 4) return false;
+    return (toupper((unsigned char)username[0]) == 'B' &&
+            toupper((unsigned char)username[1]) == 'O' &&
+            toupper((unsigned char)username[2]) == 'T' &&
+            username[3] == '_');
+}
+
+/**
+ * @brief Check if an IDLE command is blocked while the player is in the FIND_MATCH queue.
+ *        Rule (Section 4.3 & 6.10): While is_searching_match == true, the player MUST send
+ *        CANCEL_MATCH first before invoking CREATE_ROOM, JOIN_ROOM, CHALLENGE, ACCEPT,
+ *        DECLINE, PLAY_BOT, REMATCH, REMATCH_DECLINE, or FIND_MATCH again.
+ *
+ * @return true if the command must be rejected with ERR_INVALID_STATE (400).
+ */
+static inline bool protocol_is_cmd_blocked_while_searching(const char *cmd, bool is_searching_match) {
+    if (!cmd) return true;
+    if (!is_searching_match) {
+        /* If NOT searching, CANCEL_MATCH itself is invalid (ERR 400) */
+        return (strcmp(cmd, CMD_CANCEL_MATCH) == 0);
+    }
+    return (strcmp(cmd, CMD_CREATE_ROOM) == 0 ||
+            strcmp(cmd, CMD_JOIN_ROOM) == 0 ||
+            strcmp(cmd, CMD_CHALLENGE) == 0 ||
+            strcmp(cmd, CMD_ACCEPT) == 0 ||
+            strcmp(cmd, CMD_DECLINE) == 0 ||
+            strcmp(cmd, CMD_PLAY_BOT) == 0 ||
+            strcmp(cmd, CMD_FIND_MATCH) == 0 ||
+            strcmp(cmd, CMD_REMATCH) == 0 ||
+            strcmp(cmd, CMD_REMATCH_DECLINE) == 0);
+}
+
+/**
+ * @brief Check if two players are cross-challenging each other (A challenged B, then B sends CHALLENGE A).
+ *        Rule (Section 4.2 & 6.4): If target B already has a pending outgoing challenge to sender A,
+ *        the server cancels B's pending challenge (sending CHALLENGE_EXPIRED to B) and returns
+ *        ERR_INVALID_STATE (400) to A so one of the two players sends a fresh challenge.
+ */
+static inline bool protocol_is_cross_challenge(const ProtocolLobbyState *target_lobby,
+                                               const char *sender_username) {
+    if (!target_lobby || !sender_username) return false;
+    return (target_lobby->has_outgoing_challenge &&
+            strcmp(target_lobby->outgoing_target, sender_username) == 0);
+}
+
+/**
+ * @brief Check if an IN_GAME command is blocked while the match is PAUSED.
+ *        Rule (Section 6.7): While is_paused == true, MOVE, DRAW_OFFER, and PAUSE_OFFER
+ *        are rejected with ERR_INVALID_STATE (400).
+ */
+static inline bool protocol_is_cmd_blocked_while_paused(const char *cmd, bool is_paused) {
+    if (!cmd || !is_paused) return false;
+    return (strcmp(cmd, CMD_MOVE) == 0 ||
+            strcmp(cmd, CMD_DRAW_OFFER) == 0 ||
+            strcmp(cmd, CMD_PAUSE_OFFER) == 0);
+}
+
+/**
+ * @brief Update match control state after a valid MOVE is played.
+ *        Rule (Section 6.5 & 6.7): Resets turn_start_time to now and automatically cancels
+ *        any unanswered DRAW_OFFER or PAUSE_OFFER.
+ */
+static inline void protocol_controls_on_valid_move(ProtocolMatchControls *ctrl, int64_t now) {
+    if (!ctrl) return;
+    ctrl->turn_start_time = now;
+    ctrl->draw_offered_by = PIECE_NONE;
+    ctrl->pause_offered_by = PIECE_NONE;
+}
+
+/**
+ * @brief Transition match controls into the PAUSED state.
+ *        Rule (Section 6.7): Records pause_start_time = now and freezes the turn timer.
+ */
+static inline void protocol_controls_on_pause(ProtocolMatchControls *ctrl,
+                                              PieceColor paused_by,
+                                              int64_t now) {
+    if (!ctrl) return;
+    ctrl->is_paused = true;
+    ctrl->paused_by = paused_by;
+    ctrl->pause_offered_by = PIECE_NONE;
+    ctrl->pause_start_time = now;
+}
+
+/**
+ * @brief Resume match controls from the PAUSED state and compensate turn_start_time.
+ *        Rule (Section 6.7): Adds the paused duration (now - pause_start_time) to turn_start_time
+ *        so the current player retains the exact remaining seconds on their turn clock.
+ */
+static inline void protocol_controls_on_resume(ProtocolMatchControls *ctrl, int64_t now) {
+    if (!ctrl || !ctrl->is_paused) return;
+    if (now > ctrl->pause_start_time) {
+        ctrl->turn_start_time += (now - ctrl->pause_start_time);
+    }
+    ctrl->is_paused = false;
+    ctrl->paused_by = PIECE_NONE;
+    ctrl->pause_start_time = 0;
 }
 
 #ifdef __cplusplus

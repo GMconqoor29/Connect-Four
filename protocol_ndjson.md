@@ -1,6 +1,6 @@
 # Đặc tả giao thức tầng ứng dụng: Connect Four Online (NDJSON)
 
-Nhóm 10. Phiên bản giao thức: **2.0** (chuyển từ dạng text sang NDJSON)
+Nhóm 11. Phiên bản giao thức: **2.0** (chuyển từ dạng text sang NDJSON)
 
 Tài liệu này là chuẩn chung giữa **server (C)** và **client (Python)**. Mọi thay đổi phải được cả nhóm đồng ý và cập nhật tại đây trước khi code.
 
@@ -42,12 +42,13 @@ Tài liệu này là chuẩn chung giữa **server (C)** và **client (Python)**
 
 | Khái niệm | Giá trị |
 |---|---|
-| Bàn cờ | 7 cột (đánh số **0 đến 6**), 6 hàng (đánh số **0 đến 5**, hàng 0 là dưới cùng) |
+| Bàn cờ | **Cố định** 7 cột (đánh số **0 đến 6**), 6 hàng (đánh số **0 đến 5**, hàng 0 là dưới cùng) |
 | Quân cờ | `RED` đi trước, `YELLOW` đi sau. Ký hiệu trong bàn cờ: `R`, `Y`, `.` (ô trống) |
-| Trạng thái người chơi | `IDLE` (ở sảnh), `IN_ROOM` (trong phòng chờ), `IN_GAME` (đang chơi) |
+| Trạng thái người chơi | `IDLE` (ở sảnh), `IN_ROOM` (trong phòng chờ), `IN_GAME` (đang chơi), `OFFLINE` (đã ngắt kết nối/đăng xuất - chỉ dùng trong sự kiện `STATUS_CHANGE`) |
 | Kết quả | `WIN`, `LOSS`, `DRAW` (theo góc nhìn của người nhận) |
 | ELO khởi đầu | 1200, hệ số K = 32 |
-| Mã ván (`game_id`) | số nguyên dương do server cấp |
+| Cấp độ Bot AI | `EASY` (`BOT_EASY`, ELO 800), `MEDIUM` (`BOT_MEDIUM`, ELO 1200), `HARD` (`BOT_HARD`, ELO 1600) |
+| Mã ván (`game_id`) | số nguyên dương lấy từ khóa chính bảng `matches` trong PostgreSQL (`INSERT ... RETURNING id` ngay lúc `GAME_START`) |
 
 **Biểu diễn bàn cờ** (dùng trong `SYNC`): mảng **6 chuỗi**, mỗi chuỗi 7 ký tự `R`, `Y`, `.`. Phần tử đầu là **hàng trên cùng (hàng 5)**, phần tử cuối là hàng dưới cùng (hàng 0), mỗi chuỗi đi từ cột 0 đến 6.
 
@@ -63,9 +64,9 @@ Ví dụ bàn có quân vàng ở cột 2 và quân đỏ ở cột 3 (đều �
 
 ```
 CONNECTED --LOGIN--> IDLE --CREATE_ROOM/JOIN_ROOM--> IN_ROOM --đủ 2 người--> IN_GAME
-                       ^  --CHALLENGE+ACCEPT----------------------------------^   |
-                       |                                                          |
-                       +--------------------- GAME_OVER --------------------------+
+                       ^  --CHALLENGE+ACCEPT / FIND_MATCH / PLAY_BOT--------^   |
+                       |                                                        |
+                       +--------------------- GAME_OVER ------------------------+
 ```
 
 **Lệnh hợp lệ theo trạng thái:**
@@ -79,6 +80,7 @@ CONNECTED --LOGIN--> IDLE --CREATE_ROOM/JOIN_ROOM--> IN_ROOM --đủ 2 người-
 | `CREATE_ROOM`, `JOIN_ROOM` | | ✔ | | |
 | `LEAVE_ROOM` | | | ✔ | |
 | `CHALLENGE`, `ACCEPT`, `DECLINE` | | ✔ | | |
+| `PLAY_BOT` | | ✔ | | |
 | `FIND_MATCH`, `CANCEL_MATCH` | | ✔ | | |
 | `MOVE`, `RESIGN`, `DRAW_OFFER`, `DRAW_ACCEPT`, `DRAW_DECLINE`, `SYNC` | | | | ✔ |
 | `PAUSE_OFFER`, `PAUSE_ACCEPT`, `PAUSE_DECLINE`, `RESUME` | | | | ✔ |
@@ -87,9 +89,13 @@ CONNECTED --LOGIN--> IDLE --CREATE_ROOM/JOIN_ROOM--> IN_ROOM --đủ 2 người-
 Lệnh gửi sai trạng thái: server trả `ERR 400 invalid_state`.
 
 **Quy tắc chuyển trạng thái quan trọng:**
-1. **Hủy thách đấu khi rời IDLE:** Khi người chơi chuyển trạng thái rời khỏi `IDLE` (tham gia phòng `IN_ROOM`, vào ván `IN_GAME`, `LOGOUT`, hoặc ngắt kết nối `DISCONNECT`), mọi lời thách đấu đang chờ liên quan đến người chơi đó (cả gửi đi và nhận về) đều lập tức bị hủy. Server gửi sự kiện `CHALLENGE_EXPIRED` (kèm `user`) cho đối tác còn lại để họ không phải chờ hết 30 giây.
-2. **Điều kiện REMATCH:** `REMATCH` chỉ được phép gọi khi vừa kết thúc ván đấu và cả hai người chơi vẫn đang ở `IDLE`. Server lưu cờ `rematch_available` và `last_opponent`. Nếu đối thủ đã rời đi hoặc người chơi chưa đấu ván nào, gửi `REMATCH` sẽ nhận `ERR 400 invalid_state` (hoặc `ERR 301 player_not_found`).
-3. **Đăng nhập trên cùng kết nối:** Nếu kết nối đã đăng nhập thành công (`IDLE`, `IN_ROOM`, `IN_GAME`) mà gửi tiếp lệnh `LOGIN`, server trả `ERR 400 invalid_state` (chỉ cho phép `LOGIN` ở `CONNECTED`). Khác với `ERR 104 already_logged_in` là khi một socket khác cố đăng nhập cùng tài khoản.
+1. **Hủy thách đấu khi rời IDLE:** Khi người chơi chuyển trạng thái rời khỏi `IDLE` (tham gia phòng `IN_ROOM`, vào ván `IN_GAME`, bắt đầu tìm trận `FIND_MATCH`, `LOGOUT`, hoặc ngắt kết nối `DISCONNECT`), mọi lời thách đấu đang chờ liên quan đến người chơi đó (cả gửi đi và nhận về) đều lập tức bị hủy. Server gửi sự kiện `CHALLENGE_EXPIRED` (kèm `user`) cho đối tác còn lại để họ không phải chờ hết 30 giây.
+2. **Thách đấu trùng hoặc thách đấu chéo (A thách đấu B khi B đã thách đấu A):**
+   - Mỗi người chơi chỉ được gửi tối đa **1 lời thách đấu đi** tại một thời điểm. Nếu đang chờ phản hồi mà gửi tiếp `CHALLENGE`, server trả `ERR 400 invalid_state`.
+   - Nếu A đã gửi `CHALLENGE` cho B (đang chờ), mà B lại gửi ngược `CHALLENGE` cho A (thay vì `ACCEPT`), server hủy lời thách đấu đang chờ giữa hai bên (gửi `CHALLENGE_EXPIRED` cho A) và trả `ERR 400 invalid_state` cho B để yêu cầu 1 trong 2 người chơi gửi lại lời thách đấu mới.
+3. **Khi đang tìm trận (`FIND_MATCH`):** Người chơi vẫn ở trạng thái `IDLE` nhưng bật cờ `is_searching_match = true`. Khi đang tìm trận, người chơi **bắt buộc phải gửi `CANCEL_MATCH` trước** khi thực hiện các lệnh sảnh khác (`CREATE_ROOM`, `JOIN_ROOM`, `CHALLENGE`, `ACCEPT`, `PLAY_BOT`, hoặc `FIND_MATCH` lần nữa); nếu gửi các lệnh này khi chưa hủy tìm trận, server trả `ERR 400 invalid_state`.
+4. **Điều kiện REMATCH:** `REMATCH` chỉ được phép gọi khi vừa kết thúc ván đấu và cả hai người chơi vẫn đang ở `IDLE`. Server lưu cờ `rematch_available` và `last_opponent`. Ngay khi một trong hai người rời `IDLE` (hoặc bấm `FIND_MATCH`), `rematch_available` bị hủy cho cả hai. Nếu đối thủ đã rời đi hoặc người chơi chưa đấu ván nào, gửi `REMATCH` sẽ nhận `ERR 400 invalid_state` (hoặc `ERR 301 player_not_found`).
+5. **Đăng nhập trên cùng kết nối:** Nếu kết nối đã đăng nhập thành công (`IDLE`, `IN_ROOM`, `IN_GAME`) mà gửi tiếp lệnh `LOGIN`, server trả `ERR 400 invalid_state` (chỉ cho phép `LOGIN` ở `CONNECTED`). Khác với `ERR 104 already_logged_in` là khi một socket khác cố đăng nhập cùng tài khoản.
 
 ---
 
@@ -145,7 +151,7 @@ Nếu server không đọc được `id` (JSON hỏng, thiếu `id`), `id` trong
 | 402 | `room_full` | Phòng đã đủ 2 người |
 | 403 | `no_pending_offer` | Không có lời đề nghị hòa, hoãn hoặc đấu lại nào đang chờ |
 | 404 | `game_not_found` | Không có ván đó |
-| 500 | `server_error` | Lỗi nội bộ server |
+| 500 | `server_error` | Lỗi nội bộ server hoặc lỗi truy vấn/kết nối cơ sở dữ liệu PostgreSQL |
 
 ---
 
@@ -157,13 +163,16 @@ Trong các bảng dưới, cột "Lệnh" chỉ liệt kê các trường ngoài
 
 | Lệnh (trường) | Dữ liệu trong `OK` | Lỗi có thể gặp |
 |---|---|---|
-| `REGISTER` (`user`, `pass`) | không có | 103, 105 |
-| `LOGIN` (`user`, `pass`) | `elo` | 102, 104, 105 |
+| `REGISTER` (`user`, `pass`) | không có | 103, 105, 500 |
+| `LOGIN` (`user`, `pass`) | `elo` | 102, 104, 105, 500 |
 | `LOGOUT` | không có (rồi server đóng kết nối) | 400 |
-| `CHANGEPASS` (`old`, `new`) | không có | 105, 106 |
-| `PROFILE` (`user` tuỳ chọn) | `user`, `elo`, `wins`, `losses`, `draws` | 301 |
+| `CHANGEPASS` (`old`, `new`) | không có | 105, 106, 500 |
+| `PROFILE` (`user` tuỳ chọn) | `user`, `elo`, `wins`, `losses`, `draws`, `bot_wins`, `bot_losses`, `bot_draws` | 301, 500 |
 
-Nếu bỏ `user` trong `PROFILE`, server trả hồ sơ của chính người gửi.
+- Nếu bỏ `user` trong `PROFILE`, server trả hồ sơ của chính người gửi (`wins`, `losses`, `draws` là thành tích đấu người PvP; `bot_wins`, `bot_losses`, `bot_draws` là thành tích đấu với Bot để hiển thị ở tab **vs Bot**).
+- **Chặn đăng ký và đăng nhập tên Bot:**
+  - Không cho phép `REGISTER` với `user` bắt đầu bằng tiền tố hệ thống `BOT_` (không phân biệt hoa thường, trả `ERR 103 username_taken`).
+  - Các tài khoản hệ thống (`BOT_EASY`, `BOT_MEDIUM`, `BOT_HARD`) có `password_hash = NULL` trong DB; mọi nỗ lực `LOGIN` vào tài khoản Bot đều bị từ chối với `ERR 102 bad_credentials`.
 
 ### 6.2 Người chơi online
 
@@ -181,18 +190,19 @@ Sự kiện server tự gửi cho người đang ở sảnh khi trạng thái ai
 {"type":"STATUS_CHANGE","user":"hao","status":"IN_GAME"}
 ```
 
-`status` là một trong `ONLINE`, `OFFLINE`, `IDLE`, `IN_ROOM`, `IN_GAME`.
+`status` là một trong `IDLE`, `IN_ROOM`, `IN_GAME`, hoặc `OFFLINE` (khi người chơi đăng xuất/mất kết nối).
 
 ### 6.3 Phòng
 
 | Lệnh (trường) | Dữ liệu trong `OK` | Lỗi |
 |---|---|---|
-| `CREATE_ROOM` | `room_id` | 400 |
+| `CREATE_ROOM` (`turn_time` tuỳ chọn) | `room_id`, `turn_time` | 101, 400 |
 | `JOIN_ROOM` (`room_id`) | `room_id` | 401, 402 |
 | `LEAVE_ROOM` | không có | 400 |
-| `LIST_ROOMS` | `rooms`: mảng các `{"room_id","host","players","status"}` với `status` là `WAITING` hoặc `PLAYING` | |
+| `LIST_ROOMS` | `rooms`: mảng các `{"room_id","host","players","status","turn_time"}` với `status` là `WAITING` hoặc `PLAYING` | |
 
-`LIST_ROOMS` trả tối đa **40** phòng.
+- `turn_time` (trong `CREATE_ROOM`): thời gian tối đa cho mỗi nước đi (tính bằng giây, mặc định **30**, đặt **0** nếu không giới hạn, hoặc từ **5 đến 120** giây; ngoài khoảng này trả `ERR 101`).
+- `LIST_ROOMS` trả tối đa **40** phòng.
 
 Sự kiện:
 
@@ -204,19 +214,25 @@ Sự kiện:
 - `ROOM_JOINED` gửi cho chủ phòng khi có người vào phòng.
 - `ROOM_LEFT` gửi cho người còn lại khi có người rời.
 
-**Lưu ý:** Phòng trong Connect Four có sức chứa 2 người. Khi khách (guest) vào phòng, server gửi `ROOM_JOINED` cho host để thông báo, rồi tự động bắt đầu ván đấu ngay bằng `GAME_START` gửi cho cả hai bên (chủ phòng cầm quân `RED`). Không thể `LEAVE_ROOM` khi đang trong ván; dùng `RESIGN`.
+**Lưu ý:** Phòng trong Connect Four có sức chứa 2 người. Khi khách (guest) vào phòng, server gửi `ROOM_JOINED` cho host để thông báo, rồi tự động bắt đầu ván đấu ngay bằng `GAME_START` gửi cho cả hai bên (chủ phòng cầm quân `RED`, dùng `turn_time` của phòng). Không thể `LEAVE_ROOM` khi đang trong ván; dùng `RESIGN`.
 
-### 6.4 Thách đấu
+### 6.4 Thách đấu và Đấu với Bot (AI)
 
 | Lệnh (trường) | Dữ liệu trong `OK` | Lỗi |
 |---|---|---|
-| `CHALLENGE` (`user`, `turn_time` tuỳ chọn) | không có | 101, 301, 302, 304 |
+| `CHALLENGE` (`user`, `turn_time` tuỳ chọn) | không có | 101, 301, 302, 304, 400 |
 | `ACCEPT` (`user`) | không có, rồi sự kiện `GAME_START` | 303, 400 |
 | `DECLINE` (`user`) | không có | 303, 400 |
+| `PLAY_BOT` (`difficulty`, `turn_time` tuỳ chọn) | không có, rồi sự kiện `GAME_START` | 101, 400 |
 
-`turn_time`: thời gian tối đa cho mỗi nước đi (tính bằng giây, mặc định 30, đặt 0 nếu không giới hạn).
+- `turn_time`: thời gian tối đa cho mỗi nước đi (tính bằng giây, mặc định **30**, đặt **0** nếu không giới hạn, hoặc từ **5 đến 120** giây; ngoài khoảng này trả `ERR 101`).
+- `difficulty` (trong `PLAY_BOT`): chuỗi bắt buộc, nhận một trong 3 giá trị:
+  - `"EASY"`: đối thủ là `"BOT_EASY"` (ELO đại diện: **800**).
+  - `"MEDIUM"`: đối thủ là `"BOT_MEDIUM"` (ELO đại diện: **1200**).
+  - `"HARD"`: đối thủ là `"BOT_HARD"` (ELO đại diện: **1600**).
+  - Khi gửi `PLAY_BOT` hợp lệ, server trả `OK` rồi lập tức gửi `GAME_START` (người chơi cầm quân `RED`, đi trước `first: true`).
 
-Sự kiện:
+Sự kiện (khi thách đấu người chơi):
 
 ```json
 {"type":"CHALLENGED","from":"hieu"}
@@ -226,31 +242,38 @@ Sự kiện:
 
 - `CHALLENGED`: gửi cho người bị thách đấu.
 - `CHALLENGE_DECLINED`: gửi cho người thách đấu khi bị từ chối.
-- `CHALLENGE_EXPIRED`: gửi cho người còn lại khi lời thách đấu hết hạn (sau 30 giây không phản hồi, hoặc đối tác vừa rời `IDLE` như vào phòng, vào ván, mất mạng).
+- `CHALLENGE_EXPIRED`: gửi cho người còn lại khi lời thách đấu hết hạn (sau 30 giây không phản hồi, hoặc đối tác vừa rời `IDLE` như vào phòng, vào ván, tìm trận, mất mạng).
 
-Người bị thách đấu bận hoặc offline: người thách đấu nhận `ERR 302` hoặc `ERR 301` ngay.
+**Các trường hợp biên khi thách đấu:**
+- Người bị thách đấu đang bận (`IN_ROOM`, `IN_GAME`, hoặc đang `FIND_MATCH`) hoặc offline: người thách đấu nhận `ERR 302 player_busy` hoặc `ERR 301 player_not_found` ngay.
+- Mỗi người chơi chỉ được giữ **tối đa 1 lời thách đấu gửi đi** cùng lúc; nếu gửi tiếp `CHALLENGE` khi lời mời trước chưa hết hạn/chưa được trả lời thì nhận `ERR 400 invalid_state`.
+- **Thách đấu chéo (A gửi `CHALLENGE B`, sau đó B cũng gửi `CHALLENGE A`):** Server hủy lời thách đấu đang chờ giữa hai người (gửi `CHALLENGE_EXPIRED` cho A) và trả `ERR 400 invalid_state` cho B, yêu cầu 1 trong 2 người chơi gửi lại lời thách đấu mới.
 
 ### 6.5 Bắt đầu ván và chơi
 
-Sự kiện bắt đầu, gửi cho **cả hai người**:
+Khi bắt đầu ván mới, server tạo bản ghi trong bảng `matches` (`INSERT INTO matches ... RETURNING id`) để lấy `game_id` chuẩn từ PostgreSQL, sau đó gửi sự kiện `GAME_START` cho **cả hai người** (hoặc cho người chơi khi đấu với Bot):
 
 ```json
 {"type":"GAME_START","game_id":7,"opponent":"hao","color":"RED","first":true,"turn_time":30}
 ```
 
+- `game_id`: mã ván lấy từ cơ sở dữ liệu PostgreSQL (dùng xuyên suốt trong `GAME_START`, `GAME_OVER`, `HISTORY`, `GET_GAME`).
 - `color` là `"RED"` hoặc `"YELLOW"`.
 - `first` là `true` nếu người nhận đi trước, `false` nếu đi sau.
 - `turn_time` là thời gian cho mỗi lượt đi (tính bằng giây, mặc định 30).
+- **Trường hợp Bot đi trước (khi `REMATCH` với Bot đổi màu quân):** Nếu ở ván đấu với Bot mà Bot cầm quân `"RED"` (`first: false` đối với người chơi), ngay sau khi gửi `GAME_START`, server tính nước đi đầu tiên của Bot và gửi luôn sự kiện `OPP_MOVE` cho người chơi.
 
 | Lệnh (trường) | Dữ liệu trong `OK` | Lỗi |
 |---|---|---|
-| `MOVE` (`col`: số nguyên) | `col`, `row` | 101, 201, 202, 203 |
+| `MOVE` (`col`: số nguyên) | `col`, `row` | 101, 201, 202, 203, 400 |
 
 Sau mỗi nước đi hợp lệ, server gửi cho **đối thủ**:
 
 ```json
 {"type":"OPP_MOVE","col":3,"row":0}
 ```
+
+(Nếu đấu với Bot, sau khi người chơi đi nước hợp lệ mà ván chưa kết thúc, Bot sẽ tính toán nước đi và server gửi `OPP_MOVE` tương ứng cho người chơi).
 
 Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và `OPP_MOVE` (cho đối thủ) trước, rồi gửi `GAME_OVER` cho cả hai.
 
@@ -259,7 +282,7 @@ Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và
 - Server tính giờ bằng timestamp `turn_start_time` trong vòng lặp `poll()`.
 - Nếu quá `turn_time` giây mà người đến lượt không gửi nước đi hợp lệ, server gửi `GAME_OVER` với `reason: "TIMEOUT"`, bên hết giờ bị xử thua (`LOSS`), đối thủ thắng (`WIN`).
 
-**Đồng bộ lại bàn cờ** (dùng khi client cần vẽ lại, ví dụ sau lỗi hoặc reconnect):
+**Đồng bộ lại bàn cờ** (dùng khi client cần vẽ lại):
 
 | Lệnh | Dữ liệu trong `OK` |
 |---|---|
@@ -271,7 +294,8 @@ Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và
 {"type":"GAME_OVER","game_id":7,"result":"WIN","reason":"CONNECT4","elo_delta":16,"new_elo":1216}
 ```
 
-`result` theo góc nhìn của người nhận. `elo_delta` là số nguyên có dấu (ví dụ `16` hoặc `-16`).
+`result` theo góc nhìn của người nhận. `elo_delta` là số nguyên có dấu (ví dụ `16`, `-16`, hoặc `0`).
+- **Quy tắc ELO khi đấu với Bot (Cách A):** Khi chơi với Bot (`BOT_EASY` ELO 800, `BOT_MEDIUM` ELO 1200, `BOT_HARD` ELO 1600), công thức ELO vẫn tính với $R_{\text{đối thủ}}$ là ELO của Bot nhưng **người chơi không bao giờ bị hạ ELO**: $\text{elo\_delta} = \max\big(0, \text{round}(32 \times (S - E))\big)$. Nếu thắng Bot được cộng điểm theo mức ELO của Bot, nếu thua hoặc hòa bị âm điểm thì ép về `elo_delta = 0`, `new_elo` giữ nguyên. Ván đấu vẫn được lưu vào PostgreSQL để hiển thị ở tab **vs Bot** trong `HISTORY` và xem lại qua `GET_GAME`.
 
 | `reason` | Khi nào |
 |---|---|
@@ -297,34 +321,36 @@ Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và
 
 **Quy tắc xin hòa (Draw):**
 - Lời xin hòa tự hủy khi bất kỳ bên nào đi một nước `MOVE` hợp lệ.
-- Gửi `DRAW_OFFER` khi đang có một lời xin hòa chưa được phản hồi: server trả `ERR 400 invalid_state`.
-- `DRAW_ACCEPT`/`DRAW_DECLINE` khi không có lời xin hòa đang chờ: `ERR 403 no_pending_offer`.
+- Gửi `DRAW_OFFER` khi đang có một lời xin hòa chưa được phản hồi, khi ván đang `PAUSED`, hoặc khi đang đấu với Bot: server trả `ERR 400 invalid_state`.
+- `DRAW_ACCEPT`/`DRAW_DECLINE` khi không có lời xin hòa đang chờ (hoặc người gửi tự phản hồi lời xin hòa của chính mình): `ERR 403 no_pending_offer`.
 
 **Quy tắc tạm dừng (Pause):**
-- Bất kỳ bên nào cũng có thể gửi `PAUSE_OFFER`. Đối thủ nhận sự kiện `PAUSE_OFFERED`.
-- Khi đối thủ gửi `PAUSE_ACCEPT`, ván đấu chuyển sang trạng thái tạm dừng, server gửi `PAUSED` cho cả hai và đồng hồ `turn_time` bị đóng băng.
+- Bất kỳ bên nào cũng có thể gửi `PAUSE_OFFER`. Đối thủ nhận sự kiện `PAUSE_OFFERED` (nếu đấu với Bot, Bot tự động chấp nhận và server gửi `PAUSED` ngay). Lời xin pause tự hủy nếu một bên đi nước `MOVE` hợp lệ trước khi bên kia phản hồi.
+- Khi đối thủ gửi `PAUSE_ACCEPT`, ván đấu chuyển sang trạng thái tạm dừng, server lưu `pause_start_time = now`, gửi `PAUSED` cho cả hai và đồng hồ `turn_time` bị đóng băng.
+- **Khi đang `PAUSED`:** Mọi lệnh `MOVE`, `DRAW_OFFER`, `PAUSE_OFFER` đều bị từ chối với `ERR 400 invalid_state` cho đến khi ván đấu được `RESUMED`.
 - Thời gian tạm dừng tối đa là **60 giây**. Nếu hết 60 giây không ai gửi `RESUME`, server tự động gửi `RESUMED` và kích hoạt lại đồng hồ.
-- Bất kỳ bên nào cũng có thể gửi `RESUME` để tiếp tục ván đấu ngay. Server gửi `RESUMED` cho cả hai bên.
-- `PAUSE_ACCEPT`/`PAUSE_DECLINE` khi không có lời xin pause: `ERR 403 no_pending_offer`.
+- Bất kỳ bên nào cũng có thể gửi `RESUME` để tiếp tục ván đấu ngay. Server cộng bù thời gian đã tạm dừng vào mốc bắt đầu lượt (`turn_start_time += now - pause_start_time`, giữ nguyên số giây còn lại của lượt đó) và gửi `RESUMED` cho cả hai bên.
+- `PAUSE_ACCEPT`/`PAUSE_DECLINE` khi không có lời xin pause (hoặc tự chấp nhận lời mời của chính mình): `ERR 403 no_pending_offer`.
 
 ### 6.8 Đấu lại cùng đối thủ
 
 | Lệnh | Dữ liệu trong `OK` | Sự kiện cho đối thủ |
 |---|---|---|
 | `REMATCH` | không có | `{"type":"REMATCH_OFFERED"}` |
-| `REMATCH_DECLINE` | không có | `{"type":"REMATCH_DECLINED"}` |
+| `REMATCH_DECLINE` | không có | `{"type":"REMATCH_DECLINED","user":"<tên_người_từ_chối>"}` |
 
-- Khi **cả hai** cùng gửi `REMATCH`, server bắt đầu ván mới bằng `GAME_START` cho cả hai, **đổi màu quân** so với ván trước.
-- Nếu đối thủ đã rời hoặc thoát ứng dụng: `REMATCH` trả `ERR 301 player_not_found`.
+- Khi **cả hai** cùng gửi `REMATCH`, server bắt đầu ván mới bằng `GAME_START` cho cả hai, **đổi màu quân** so với ván trước. (Nếu đối thủ ván trước là Bot, khi người chơi gửi `REMATCH`, Bot tự động đồng ý và bắt đầu ván mới ngay; nếu ván mới Bot cầm quân `RED` đi trước thì ngay sau `GAME_START` server gửi luôn `OPP_MOVE` nước đầu của Bot).
+- Nếu người chơi bấm `REMATCH` lặp lại lần 2 trong lúc đang chờ đối thủ phản hồi: trả `ERR 400 invalid_state`.
+- Nếu đối thủ đã rời hoặc thoát ứng dụng: `REMATCH` trả `ERR 301 player_not_found` (hoặc `ERR 400 invalid_state` nếu đối thủ đã sang phòng/trận khác).
 - **Nếu đang chờ rematch mà đối thủ ngắt kết nối, đăng xuất hoặc rời sảnh:** Server lập tức gửi sự kiện `{"type":"REMATCH_DECLINED","user":"<tên_đối_thủ>"}` cho bên đang chờ để client không bị treo màn hình chờ.
-- Không có lời đề nghị đang chờ khi gửi `REMATCH_DECLINE`: `ERR 403 no_pending_offer`.
+- Không có lời đề nghị đang chờ khi gửi `REMATCH_DECLINE` (hoặc tự từ chối lời mời của chính mình): `ERR 403 no_pending_offer`.
 
 ### 6.9 Lịch sử và replay
 
-`HISTORY` (`limit` tuỳ chọn, mặc định 20, tối đa 30): trả các ván gần nhất trước.
+`HISTORY` (`limit` tuỳ chọn, mặc định 20, tối đa 30; `mode` tuỳ chọn: `"PVP"`, `"BOT"`, hoặc bỏ trống để lấy tất cả): trả các ván gần nhất trước. Trên GUI hiển thị tách thành 2 tab: **PvP (Đấu người)** và **vs Bot (Đấu máy)**.
 
 ```json
-{"type":"OK","id":9,"cmd":"HISTORY","games":[{"game_id":7,"opponent":"hao","result":"WIN","elo_delta":16,"time":1760000000}]}
+{"type":"OK","id":9,"cmd":"HISTORY","games":[{"game_id":7,"opponent":"hao","result":"WIN","elo_delta":16,"time":1760000000},{"game_id":6,"opponent":"BOT_HARD","result":"LOSS","elo_delta":0,"time":1759999000}]}
 ```
 
 `GET_GAME` (`game_id`): lỗi 404 nếu không có ván.
@@ -336,14 +362,14 @@ Khi một nước đi kết thúc ván, server gửi `OK` (cho người đi) và
 - `winner` là `"RED"`, `"YELLOW"` hoặc `"DRAW"`.
 - `moves` là mảng số cột theo thứ tự đã đi (nước đầu của `RED`, xen kẽ). Client replay bằng cách thả quân lần lượt theo mảng.
 
-### 6.10 Ghép trận tự động (tuỳ chọn, giai đoạn mở rộng)
+### 6.10 Ghép trận tự động (Matchmaking theo ELO)
 
-| Lệnh | Dữ liệu trong `OK` |
-|---|---|
-| `FIND_MATCH` | không có (server bắt đầu tìm) |
-| `CANCEL_MATCH` | không có |
+| Lệnh | Dữ liệu trong `OK` | Lỗi |
+|---|---|---|
+| `FIND_MATCH` | không có (server đưa người chơi vào hàng đợi tìm trận) | 400 |
+| `CANCEL_MATCH` | không có (rời hàng đợi tìm trận) | 400 |
 
-Khi tìm được đối thủ có ELO gần nhau, server gửi `GAME_START` cho cả hai. Khoảng chênh ELO cho phép nới rộng dần theo thời gian chờ.
+Khi tìm được đối thủ có ELO gần nhau, server gửi `GAME_START` cho cả hai. Khoảng chênh ELO cho phép nới rộng dần theo thời gian chờ. Khi đang tìm trận, người chơi **phải gửi `CANCEL_MATCH` trước** nếu muốn chuyển sang tạo phòng, vào phòng, thách đấu hoặc đấu với Bot (nếu chưa `CANCEL_MATCH` mà gửi các lệnh đó sẽ nhận `ERR 400 invalid_state`).
 
 ### 6.11 Giữ kết nối
 
@@ -358,16 +384,20 @@ Khi tìm được đối thủ có ELO gần nhau, server gửi `GAME_START` cho
 
 ## 7. Quy tắc xử lý của server
 
-1. **Kiểm tra mọi nước đi:** đúng lượt, `col` là số nguyên trong 0 đến 6, cột chưa đầy. Sai thì trả `ERR` và **không đổi trạng thái ván**.
-2. **Sau mỗi nước đi hợp lệ:** kiểm tra 4 hướng (ngang, dọc, hai đường chéo) từ quân vừa thả; nếu không thắng mà bàn đầy 42 quân thì hòa.
+1. **Kiểm tra mọi nước đi:** ván không bị `PAUSED`, đúng lượt, `col` là số nguyên trong 0 đến 6, cột chưa đầy. Sai thì trả `ERR` và **không đổi trạng thái ván**.
+2. **Sau mỗi nước đi hợp lệ:** kiểm tra 4 hướng (ngang, dọc, hai đường chéo) từ quân vừa thả trên bàn cờ cố định 6×7; nếu không thắng mà bàn đầy 42 quân thì hòa.
 3. **Mất kết nối giữa ván** (đóng socket hoặc quá 45 giây không có dữ liệu): coi như người đó đầu hàng (`reason = DISCONNECT`), đối thủ nhận `GAME_OVER ... WIN`.
 4. **Đăng nhập trùng:** nếu tài khoản đang đăng nhập, `LOGIN` mới bị từ chối bằng `ERR 104`.
-5. **Cập nhật ELO** cho cả hai khi ván kết thúc (kể cả đầu hàng, mất kết nối), rồi mới gửi `GAME_OVER`:
-   `E = 1 / (1 + 10^((R_đối_thủ - R_mình)/400))`, `R' = R + K·(S - E)` với `S` = 1 (thắng), 0.5 (hòa), 0 (thua). Làm tròn `elo_delta` về số nguyên.
-6. **Mật khẩu:** server lưu dạng băm (có salt), không lưu bản rõ.
-7. **Ghi log ván:** khi ván kết thúc, ghi người chơi, thời gian, danh sách nước đi và kết quả để phục vụ `HISTORY` và `GET_GAME`.
+5. **Cập nhật ELO** khi ván kết thúc (kể cả đầu hàng, mất kết nối), rồi mới gửi `GAME_OVER`:
+   - **Đấu giữa 2 người chơi (PvP):** `E = 1 / (1 + 10^((R_đối_thủ - R_mình)/400))`, `elo_delta = round(K·(S - E))`, `R' = R + elo_delta` với `S` = 1 (thắng), 0.5 (hòa), 0 (thua), `K = 32`.
+   - **Đấu với Bot (`BOT_EASY` ELO 800, `BOT_MEDIUM` ELO 1200, `BOT_HARD` ELO 1600) — Cách A:** Tính `E` theo ELO của Bot và `elo_delta = max(0, round(K·(S - E)))`. Thắng Bot được cộng ELO, thua hoặc hòa không bao giờ bị trừ ELO (`elo_delta = 0`). ELO của Bot luôn cố định.
+6. **Mật khẩu và tài khoản hệ thống:** server lưu mật khẩu dạng băm (có salt) trong PostgreSQL, không lưu bản rõ. Các tài khoản Bot (`BOT_EASY`, `BOT_MEDIUM`, `BOT_HARD`) có `password_hash = NULL`, không thể đăng nhập; đồng thời chặn `REGISTER` mọi tên bắt đầu bằng `BOT_` (`ERR 103`).
+7. **Ghi log ván vào PostgreSQL (`game_id` từ DB):**
+   - Ngay khi bắt đầu ván (`GAME_START`), server `INSERT` dòng mới vào bảng `matches` (`RETURNING id`) để lấy `game_id`.
+   - Khi ván kết thúc (`GAME_OVER`, kể cả ván đấu với Bot), trong một transaction: cập nhật kết quả vào `matches`, ghi toàn bộ danh sách nước đi vào `match_moves`, và cập nhật ELO + thống kê (`wins/losses/draws` hoặc `bot_wins/bot_losses/bot_draws`) trong `users` để phục vụ `PROFILE`, `HISTORY` và `GET_GAME`.
+   - Nếu truy vấn hoặc kết nối PostgreSQL gặp sự cố khi xử lý lệnh của client, server trả `ERR 500 server_error`, ghi log lỗi và thử kết nối lại (`PQreset`).
 8. **Dòng hỏng:** JSON sai cú pháp hoặc thiếu `type`/`id` thì trả `ERR 107` (với `id` là `null` nếu không đọc được) và **giữ kết nối**, chỉ bỏ dòng đó.
-9. **Lưu ý cài đặt trong C:** dùng thư viện JSON nhẹ (ví dụ cJSON hoặc jsmn). Luôn kiểm tra kiểu từng trường trước khi lấy giá trị, và giải phóng đối tượng JSON sau mỗi message để tránh rò rỉ bộ nhớ.
+9. **Lưu ý cài đặt trong C:** dùng thư viện JSON nhẹ (ví dụ cJSON) và thư viện `libpq` cho PostgreSQL. Luôn kiểm tra kiểu từng trường trước khi lấy giá trị, và giải phóng đối tượng JSON sau mỗi message để tránh rò rỉ bộ nhớ.
 
 ---
 
@@ -393,8 +423,8 @@ S  -> C1: {"type":"OK","id":4,"cmd":"CHALLENGE"}
 S  -> C2: {"type":"CHALLENGED","from":"hieu"}
 C2 -> S : {"type":"ACCEPT","id":2,"user":"hieu"}
 S  -> C2: {"type":"OK","id":2,"cmd":"ACCEPT"}
-S  -> C1: {"type":"GAME_START","game_id":7,"opponent":"hao","color":"RED","first":true}
-S  -> C2: {"type":"GAME_START","game_id":7,"opponent":"hieu","color":"YELLOW","first":false}
+S  -> C1: {"type":"GAME_START","game_id":7,"opponent":"hao","color":"RED","first":true,"turn_time":30}
+S  -> C2: {"type":"GAME_START","game_id":7,"opponent":"hieu","color":"YELLOW","first":false,"turn_time":30}
 
 C1 -> S : {"type":"MOVE","id":5,"col":3}
 S  -> C1: {"type":"OK","id":5,"cmd":"MOVE","col":3,"row":0}
@@ -454,22 +484,22 @@ S  -> C1: {"type":"OK","id":21,"cmd":"REMATCH"}
 S  -> C2: {"type":"REMATCH_OFFERED"}
 C2 -> S : {"type":"REMATCH","id":10}
 S  -> C2: {"type":"OK","id":10,"cmd":"REMATCH"}
-S  -> C1: {"type":"GAME_START","game_id":8,"opponent":"hao","color":"YELLOW","first":false}     (đổi màu)
-S  -> C2: {"type":"GAME_START","game_id":8,"opponent":"hieu","color":"RED","first":true}
+S  -> C1: {"type":"GAME_START","game_id":8,"opponent":"hao","color":"YELLOW","first":false,"turn_time":30}     (đổi màu)
+S  -> C2: {"type":"GAME_START","game_id":8,"opponent":"hieu","color":"RED","first":true,"turn_time":30}
 ```
 
 ### 8.5 Phòng
 
 ```
-C1 -> S : {"type":"CREATE_ROOM","id":30}
-S  -> C1: {"type":"OK","id":30,"cmd":"CREATE_ROOM","room_id":3}
+C1 -> S : {"type":"CREATE_ROOM","id":30,"turn_time":30}
+S  -> C1: {"type":"OK","id":30,"cmd":"CREATE_ROOM","room_id":3,"turn_time":30}
 C2 -> S : {"type":"LIST_ROOMS","id":11}
-S  -> C2: {"type":"OK","id":11,"cmd":"LIST_ROOMS","rooms":[{"room_id":3,"host":"hieu","players":1,"status":"WAITING"}]}
+S  -> C2: {"type":"OK","id":11,"cmd":"LIST_ROOMS","rooms":[{"room_id":3,"host":"hieu","players":1,"status":"WAITING","turn_time":30}]}
 C2 -> S : {"type":"JOIN_ROOM","id":12,"room_id":3}
 S  -> C2: {"type":"OK","id":12,"cmd":"JOIN_ROOM","room_id":3}
 S  -> C1: {"type":"ROOM_JOINED","user":"hao"}
-S  -> C1: {"type":"GAME_START","game_id":9,"opponent":"hao","color":"RED","first":true}
-S  -> C2: {"type":"GAME_START","game_id":9,"opponent":"hieu","color":"YELLOW","first":false}
+S  -> C1: {"type":"GAME_START","game_id":9,"opponent":"hao","color":"RED","first":true,"turn_time":30}
+S  -> C2: {"type":"GAME_START","game_id":9,"opponent":"hieu","color":"YELLOW","first":false,"turn_time":30}
 ```
 
 ### 8.6 Xem lại ván
@@ -529,6 +559,19 @@ S  -> C1: {"type":"OK","id":80,"cmd":"REMATCH"}
 S  -> C2: {"type":"REMATCH_OFFERED"}
 (C2 đột ngột ngắt kết nối hoặc bấm LOGOUT)
 S  -> C1: {"type":"REMATCH_DECLINED","user":"hao"}                (C1 không bị treo chờ)
+```
+
+### 8.11 Chơi với Bot AI (không bị hạ ELO, vẫn lưu lịch sử)
+
+```
+C1 -> S : {"type":"PLAY_BOT","id":90,"difficulty":"HARD","turn_time":30}
+S  -> C1: {"type":"OK","id":90,"cmd":"PLAY_BOT"}
+S  -> C1: {"type":"GAME_START","game_id":12,"opponent":"BOT_HARD","color":"RED","first":true,"turn_time":30}
+C1 -> S : {"type":"MOVE","id":91,"col":3}
+S  -> C1: {"type":"OK","id":91,"cmd":"MOVE","col":3,"row":0}
+S  -> C1: {"type":"OPP_MOVE","col":3,"row":1}
+... (kết thúc ván, giả sử người chơi thua Bot) ...
+S  -> C1: {"type":"GAME_OVER","game_id":12,"result":"LOSS","reason":"CONNECT4","elo_delta":0,"new_elo":1200}
 ```
 
 ---
